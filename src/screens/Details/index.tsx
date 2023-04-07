@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { Alert, ScrollView, View } from "react-native";
+import { Alert, ScrollView, View, Platform } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
-import * as FileSystem from 'expo-file-system';
-
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from "expo-av";
+import * as FileSystem from "expo-file-system";
 import { Tags } from "../../components/Tags";
 import { Input } from "../../components/Input";
 import { Modal } from "../../components/Modal";
@@ -11,16 +10,13 @@ import { Header } from "../../components/Header";
 import { Button } from "../../components/Button";
 import { TextArea } from "../../components/TextArea";
 import { ButtonIcon } from "../../components/ButtonIcon";
-
 import { styles } from "./styles";
 import { Toast } from "../../components/Toast";
-
-const CHAT_GPD_API_KEY = process.env.CHAT_GPD_API_KEY;
-const GCP_SPEECH_TO_TEXT_KEY = process.env.GCP_SPEECH_TO_TEXT_KEY;
+import React from "react";
 
 const RECORDING_OPTIONS = {
   android: {
-    extension: '.m4a',
+    extension: ".m4a",
     outputFormat: Audio.AndroidOutputFormat.MPEG_4,
     audioEncoder: Audio.AndroidAudioEncoder.AAC,
     sampleRate: 44100,
@@ -28,7 +24,7 @@ const RECORDING_OPTIONS = {
     bitRate: 128000,
   },
   ios: {
-    extension: '.wav',
+    extension: ".wav",
     audioQuality: Audio.IOSAudioQuality.HIGH,
     sampleRate: 44100,
     numberOfChannels: 1,
@@ -37,23 +33,24 @@ const RECORDING_OPTIONS = {
     linearPCMIsBigEndian: false,
     linearPCMIsFloat: false,
   },
-  web: {
-
-  }
+  web: {},
 };
 
 export function Details() {
   const [tags, setTags] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isConvertingSpeechToText, setIsConvertingSpeechToText] = useState(false);
-  const [description, setDescription] = useState('');
-  const [collectionName, setCollectionName] = useState('Tags');
+  const [isConvertingSpeechToText, setIsConvertingSpeechToText] =
+    useState(false);
+  const [description, setDescription] = useState("");
+  const [collectionName, setCollectionName] = useState("Tags");
   const [isModalFormVisible, setIsModalFormVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
 
-  function handleFetchTags() {
+  const authorization = `Bearer ${process.env.OPENAI_API_KEY}`;
+
+  async function handleFetchTags() {
     setIsLoading(true);
     const prompt = `
       Generate keywords in Portuguese for a post about ${description.trim()}.       
@@ -61,31 +58,39 @@ export function Details() {
       Return each item separated by a comma, in lowercase, and without a line break.
     `;
 
-    fetch("https://api.openai.com/v1/engines/text-davinci-003-playground/completions", {
-      method: 'POST',
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${CHAT_GPD_API_KEY}`
-      },
-      body: JSON.stringify({
-        prompt,
-        temperature: 0.22,
-        max_tokens: 500,
-        top_p: 1,
-        frequency_penalty: 0,
-        presence_penalty: 0,
-      }),
-    })
-      .then(response => response.json())
-      .then((data) => saveTags(data.choices[0].text))
-      .catch(() => Alert.alert('Erro', 'Não foi possível buscar as tags.'))
+    fetch(
+      "https://api.openai.com/v1/engines/text-davinci-003-playground/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          authorization,
+        },
+        body: JSON.stringify({
+          prompt,
+          temperature: 0.22,
+          max_tokens: 500,
+          top_p: 1,
+          frequency_penalty: 0,
+          presence_penalty: 0,
+        }),
+      }
+    )
+      .then((response) => response.json())
+      .then((data) => {
+        console.log({ data });
+        saveTags(data.choices[0].text);
+      })
+      .catch((error) =>
+        Alert.alert(`Erro", "Não foi possível buscar as tags. ${error}`)
+      )
       .finally(() => setIsLoading(false));
   }
 
   function saveTags(data: string) {
     const tagsFormatted = data
       .trim()
-      .split(',')
+      .split(",")
       .map((tag) => `#${tag}`);
 
     setTags(tagsFormatted);
@@ -98,13 +103,13 @@ export function Details() {
   async function handleRecordingStart() {
     const { granted } = await Audio.getPermissionsAsync();
 
+    const recording = new Audio.Recording();
     if (granted) {
       try {
-        setToastMessage('Gravando...');
-
-        const { recording } = await Audio.Recording.createAsync(RECORDING_OPTIONS);
+        setToastMessage("Gravando...");
+        await recording.prepareToRecordAsync(RECORDING_OPTIONS);
+        await recording.startAsync();
         setRecording(recording);
-
       } catch (error) {
         console.log(error);
       }
@@ -114,16 +119,16 @@ export function Details() {
   async function handleRecordingStop() {
     try {
       setToastMessage(null);
-
       await recording?.stopAndUnloadAsync();
       const recordingFileUri = recording?.getURI();
-
       if (recordingFileUri) {
-        const base64File = await FileSystem.readAsStringAsync(recordingFileUri, { encoding: FileSystem?.EncodingType?.Base64 });
+        const filename = recordingFileUri.split("/").pop();
+
+        await getTranscription(recordingFileUri, filename);
+
         await FileSystem.deleteAsync(recordingFileUri);
 
         setRecording(null);
-        getTranscription(base64File);
       } else {
         Alert.alert("Audio", "Não foi possível obter a gravação.");
       }
@@ -132,45 +137,48 @@ export function Details() {
     }
   }
 
-  function getTranscription(base64File: string) {
+  async function getTranscription(file: string, fileName: string) {
     setIsConvertingSpeechToText(true);
 
-    fetch(`https://speech.googleapis.com/v1/speech:recognize?key=${GCP_SPEECH_TO_TEXT_KEY}`, {
-      method: 'POST',
-      body: JSON.stringify({
-        config: {
-          languageCode: "pt-BR",
-          encoding: "LINEAR16",
-          sampleRateHertz: 41000,
-        },
-        audio: {
-          content: base64File
-        }
-      })
+    const formData = new FormData();
+    const typeByPlatform = Platform.OS === "android" ? "m4a" : "wav";
+    formData.append("file", {
+      uri: file,
+      type: `audio/${typeByPlatform}`,
+      name: fileName,
+    });
+    formData.append("model", "whisper-1");
+    formData.append("language", "pt");
+
+    await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "content-type": "multipart/form-data",
+        authorization,
+      },
+      body: formData,
     })
-      .then(response => response.json())
+      .then((response) => response.json())
       .then((data) => {
-        setDescription(data.results[0].alternatives[0].transcript);
+        setDescription(data?.text);
       })
-      .catch((error) => console.log(error))
-      .finally(() => setIsConvertingSpeechToText(false))
+      .catch((error) => console.error(error))
+      .finally(() => setIsConvertingSpeechToText(false));
   }
 
   useEffect(() => {
-    Audio
-      .requestPermissionsAsync()
-      .then((granted) => {
-        if (granted) {
-          Audio.setAudioModeAsync({
-            allowsRecordingIOS: true,
-            interruptionModeIOS: InterruptionModeIOS.DoNotMix,
-            playsInSilentModeIOS: true,
-            shouldDuckAndroid: true,
-            interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
-            playThroughEarpieceAndroid: true,
-          });
-        }
-      });
+    Audio.requestPermissionsAsync().then((granted) => {
+      if (granted) {
+        Audio.setAudioModeAsync({
+          allowsRecordingIOS: true,
+          interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+          playsInSilentModeIOS: true,
+          shouldDuckAndroid: true,
+          interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+          playThroughEarpieceAndroid: true,
+        });
+      }
+    });
   }, []);
 
   return (
@@ -211,10 +219,7 @@ export function Details() {
           </View>
         </View>
 
-        <Tags
-          tags={tags}
-          setTags={setTags}
-        />
+        <Tags tags={tags} setTags={setTags} />
       </ScrollView>
 
       <Modal
@@ -229,12 +234,9 @@ export function Details() {
             value={collectionName}
           />
 
-          <Button
-            title="Salvar"
-            onPress={handleNameCollectionEdit}
-          />
+          <Button title="Salvar" onPress={handleNameCollectionEdit} />
         </>
       </Modal>
-    </SafeAreaView >
+    </SafeAreaView>
   );
 }
